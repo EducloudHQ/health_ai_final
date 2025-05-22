@@ -1,14 +1,9 @@
-# Welcome to your CDK TypeScript project
+# Reference Articles
 
-This is a blank project for CDK development with TypeScript.
+https://aws.amazon.com/blogs/machine-learning/amazon-bedrock-guardrails-announces-iam-policy-based-enforcement-to-deliver-safe-ai-interactions/
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+https://aws.amazon.com/blogs/aws/amazon-bedrock-guardrails-enhances-generative-ai-application-safety-with-new-capabilities/
 
-## Useful commands
+https://aws.amazon.com/blogs/publicsector/how-to-safeguard-healthcare-data-privacy-using-amazon-bedrock-guardrails/
 
-* `npm run build`   compile typescript to js
-* `npm run watch`   watch for changes and compile
-* `npm run test`    perform the jest unit tests
-* `npx cdk deploy`  deploy this stack to your default AWS account/region
-* `npx cdk diff`    compare deployed stack with current state
-* `npx cdk synth`   emits the synthesized CloudFormation template
+https://aws.amazon.com/blogs/compute/implementing-a-serverless-architecture-to-detect-absence-of-guardrails-in-amazon-bedrock-inference-api-calls/

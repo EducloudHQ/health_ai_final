@@ -50,31 +50,6 @@ export class HealthAiCdkStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const userPool: UserPool = new UserPool(this, "health-api-userpool", {
-      selfSignUpEnabled: true,
-      accountRecovery: AccountRecovery.PHONE_AND_EMAIL,
-      userVerification: {
-        emailStyle: VerificationEmailStyle.CODE,
-      },
-      autoVerify: {
-        email: true,
-      },
-      standardAttributes: {
-        email: {
-          required: true,
-          mutable: true,
-        },
-      },
-    });
-
-    const userPoolClient: UserPoolClient = new UserPoolClient(
-      this,
-      "HealthAIUserPoolClient",
-      {
-        userPool,
-      }
-    );
-
     this.healthAiGraphqlApi = new GraphqlApi(this, "health-ai-api", {
       name: "healthAPIAPIApp",
       definition: Definition.fromFile("schema/schema.graphql"),
@@ -87,15 +62,6 @@ export class HealthAiCdkStack extends cdk.Stack {
             expires: cdk.Expiration.atDate(KEY_EXPIRATION_DATE),
           },
         },
-        additionalAuthorizationModes: [
-          {
-            authorizationType: AuthorizationType.USER_POOL,
-            userPoolConfig: {
-              userPool: userPool,
-            },
-          },
-          { authorizationType: AuthorizationType.IAM },
-        ],
       },
       xrayEnabled: true,
       logConfig: {
@@ -141,129 +107,9 @@ export class HealthAiCdkStack extends cdk.Stack {
       chunkingStrategy: ChunkingStrategy.FIXED_SIZE,
     });
 
-    const guardrail = new bedrock.Guardrail(this, "HealthcareAIGuardrail", {
-      name: "HealthcareAIGuardrail",
-      description:
-        "Guardrail for serverless healthcare AI app using MIMIC-III data",
-      blockedInputMessaging:
-        "Sorry — that request violates the usage policy for this medical assistant.",
-      blockedOutputsMessaging:
-        "Sorry — part of the answer was removed to protect patient privacy.",
-    });
-
-    //  Harmful-content filters (strict on both input & output)
-    [
-      ContentFilterType.SEXUAL,
-      ContentFilterType.VIOLENCE,
-      ContentFilterType.HATE,
-      ContentFilterType.INSULTS,
-      ContentFilterType.MISCONDUCT,
-    ].forEach((type) =>
-      guardrail.addContentFilter({
-        type,
-        inputStrength: ContentFilterStrength.HIGH,
-        outputStrength: ContentFilterStrength.HIGH,
-        inputAction: GuardrailAction.BLOCK,
-        outputAction: GuardrailAction.BLOCK,
-        inputModalities: [ModalityType.TEXT],
-        outputModalities: [ModalityType.TEXT],
-      })
-    );
-
-    guardrail.addContentFilter({
-      type: ContentFilterType.PROMPT_ATTACK,
-      inputStrength: ContentFilterStrength.HIGH,
-      outputStrength: ContentFilterStrength.NONE,
-      inputAction: GuardrailAction.BLOCK,
-      outputAction: GuardrailAction.BLOCK,
-      inputModalities: [ModalityType.TEXT],
-      outputModalities: [ModalityType.TEXT],
-    });
-    //  Denied topics ─ the assistant must not give legal / financial advice
-    guardrail.addDeniedTopicFilter(Topic.FINANCIAL_ADVICE);
-    guardrail.addDeniedTopicFilter(
-      Topic.custom({
-        name: "Legal_Advice",
-        definition:
-          "Guidance or suggestions on legal matters, laws, or litigation.",
-        examples: [
-          "Should I sue my doctor?",
-          "Is this malpractice?",
-          "Explain this law to me.",
-        ],
-        inputAction: GuardrailAction.BLOCK,
-        outputAction: GuardrailAction.BLOCK,
-      })
-    );
-
-    //  Word filters – profanity list + generic stop-words
-    guardrail.addManagedWordListFilter({
-      type: ManagedWordFilterType.PROFANITY,
-      inputAction: GuardrailAction.BLOCK,
-      outputAction: GuardrailAction.BLOCK,
-    });
-    guardrail.addWordFilter({ text: "10014354" }); // example custom word
-
-    // PII filters – anonymise or block patient identifiers
-    guardrail.addPIIFilter({
-      type: PIIType.General.NAME,
-      action: GuardrailAction.ANONYMIZE,
-      inputAction: GuardrailAction.BLOCK,
-      outputAction: GuardrailAction.ANONYMIZE,
-    });
-    guardrail.addPIIFilter({
-      type: PIIType.General.ADDRESS,
-      action: GuardrailAction.ANONYMIZE,
-      inputAction: GuardrailAction.BLOCK,
-      outputAction: GuardrailAction.ANONYMIZE,
-    });
-    guardrail.addPIIFilter({
-      type: PIIType.General.PHONE,
-      action: GuardrailAction.ANONYMIZE,
-      inputAction: GuardrailAction.BLOCK,
-      outputAction: GuardrailAction.ANONYMIZE,
-    });
-    guardrail.addPIIFilter({
-      type: PIIType.General.AGE,
-      action: GuardrailAction.BLOCK,
-      inputAction: GuardrailAction.BLOCK,
-      outputAction: GuardrailAction.ANONYMIZE,
-    });
-
-    //  Regex filter – catch typical ICU medical-record numbers (e.g. `MRN:1234567`)
-    guardrail.addRegexFilter({
-      name: "ICU_MRN",
-      pattern: "\\bMRN[:\\- ]?\\d{6,8}\\b",
-      action: GuardrailAction.ANONYMIZE,
-      description: "Mask raw Medical Record Numbers",
-      inputAction: GuardrailAction.BLOCK,
-      outputAction: GuardrailAction.ANONYMIZE,
-    });
-
-    //   Contextual grounding – block hallucinations & off-topic answers
-    guardrail.addContextualGroundingFilter({
-      type: ContextualGroundingFilterType.GROUNDING,
-      threshold: 0.85,
-      action: GuardrailAction.BLOCK,
-      enabled: true,
-    });
-
     this.healthAiGraphqlApi.addEnvironmentVariable(
       "KNOWLEDGEBASE_ID",
       this.healthKnowledgeBase.knowledgeBaseId
-    );
-    this.healthAiGraphqlApi.addEnvironmentVariable(
-      "FOUNDATION_MODEL_ARN",
-      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
-    );
-
-    this.healthAiGraphqlApi.addEnvironmentVariable(
-      "GUARDRAIL_ID",
-      guardrail.guardrailId
-    );
-    this.healthAiGraphqlApi.addEnvironmentVariable(
-      "GUARDRAIL_VERSION",
-      guardrail.guardrailVersion
     );
 
     const bedrockRetrieveAndGenerateDS =
@@ -287,50 +133,11 @@ export class HealthAiCdkStack extends cdk.Stack {
         "bedrock:RetrieveAndGenerate",
       ],
 
-      resources: [
-        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0",
-        `arn:aws:bedrock:us-east-1:132260253285:knowledge-base/${this.healthKnowledgeBase.knowledgeBaseId}`,
-        "arn:aws:bedrock:us-east-1:132260253285:guardrail/hxncc8et2exw",
-      ],
-    });
-
-    const denyNoGuardrailStmt = new PolicyStatement({
-      sid: "DenyInvokeWithoutGuardrail",
-      effect: Effect.DENY,
-      conditions: {
-        Null: {
-          "bedrock:GuardrailIdentifier": true,
-        },
-      },
-      actions: [
-        "bedrock:InvokeModel",
-        "bedrock:Retrieve",
-        "bedrock:RetrieveAndGenerate",
-      ],
-
       resources: ["*"],
     });
 
-    const applyGuardrail = new PolicyStatement({
-      sid: "ApplyGuardrail",
-      effect: Effect.ALLOW,
-
-      actions: ["bedrock:ApplyGuardrail"],
-
-      resources: [
-        "arn:aws:bedrock:us-east-1:132260253285:guardrail/hxncc8et2exw",
-      ],
-    });
     bedrockRetrieveAndGenerateDS.grantPrincipal.addToPrincipalPolicy(
       allowInvokeStmt
-    );
-
-    bedrockRetrieveAndGenerateDS.grantPrincipal.addToPrincipalPolicy(
-      denyNoGuardrailStmt
-    );
-
-    bedrockRetrieveAndGenerateDS.grantPrincipal.addToPrincipalPolicy(
-      applyGuardrail
     );
 
     const retrieveAndGenerateResponseResolver =
@@ -347,19 +154,5 @@ export class HealthAiCdkStack extends cdk.Stack {
           ),
         }
       );
-
-    const applyGuardrailResolver = this.healthAiGraphqlApi.createResolver(
-      "applyGuardrailResolver",
-
-      {
-        typeName: "Query",
-        fieldName: "applyGuardrail",
-        dataSource: bedrockRetrieveAndGenerateDS,
-        runtime: FunctionRuntime.JS_1_0_0,
-        code: Code.fromAsset(
-          path.join(__dirname, "../resolvers/applyGuardrail.js")
-        ),
-      }
-    );
   }
 }
