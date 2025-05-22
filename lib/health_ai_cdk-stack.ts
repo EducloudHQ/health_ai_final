@@ -111,6 +111,10 @@ export class HealthAiCdkStack extends cdk.Stack {
       "KNOWLEDGEBASE_ID",
       this.healthKnowledgeBase.knowledgeBaseId
     );
+    this.healthAiGraphqlApi.addEnvironmentVariable(
+      "FOUNDATION_MODEL_ARN",
+      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+    );
 
     const bedrockRetrieveAndGenerateDS =
       this.healthAiGraphqlApi.addHttpDataSource(
