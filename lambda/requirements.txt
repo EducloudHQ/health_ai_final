@@ -1,0 +1,5 @@
+strands-agents>=0.1.0
+strands-agents-tools>=0.1.0
+boto3>=1.38.29
+
+aws-lambda-powertools[tracer]>=3.11.0

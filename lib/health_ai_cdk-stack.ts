@@ -1,3 +1,4 @@
+import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha/lib/function";
 import { bedrock } from "@cdklabs/generative-ai-cdk-constructs";
 import {
   VectorKnowledgeBase,
@@ -12,6 +13,8 @@ import {
   ModalityType,
   PIIType,
   Topic,
+  Agent,
+  AgentAlias,
 } from "@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/bedrock";
 import {} from "@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/bedrock";
 import { PineconeVectorStore } from "@cdklabs/generative-ai-cdk-constructs/lib/cdk-lib/pinecone";
@@ -31,22 +34,31 @@ import {
   UserPoolClient,
   VerificationEmailStyle,
 } from "aws-cdk-lib/aws-cognito";
-import {
-  Role,
-  ServicePrincipal,
-  PolicyStatement,
-  Effect,
-} from "aws-cdk-lib/aws-iam";
+import { PolicyStatement, Effect } from "aws-cdk-lib/aws-iam";
+import { Runtime, Tracing } from "aws-cdk-lib/aws-lambda";
 import { Guardrail } from "aws-cdk-lib/aws-stepfunctions-tasks";
 import { Construct } from "constructs";
 import path from "path";
 const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
 const CURRENT_DATE = new Date();
 const KEY_EXPIRATION_DATE = new Date(CURRENT_DATE.getTime() + SEVEN_DAYS);
-
+export const COMMON_LAMBDA_ENV_VARS = {
+  POWERTOOLS_SERVICE_NAME: "scheduled-posts",
+  POWERTOOLS_LOGGER_LOG_LEVEL: "WARN",
+  POWERTOOLS_LOGGER_SAMPLE_RATE: "0.01",
+  POWERTOOLS_LOGGER_LOG_EVENT: "true",
+  POWERTOOLS_METRICS_NAMESPACE: "ScheduledPosts",
+};
 export class HealthAiCdkStack extends cdk.Stack {
   public readonly healthAiGraphqlApi: GraphqlApi;
   public readonly healthKnowledgeBase: VectorKnowledgeBase;
+  public readonly agent: Agent;
+  public readonly agent_alias: AgentAlias;
+
+  /**
+   * The Lambda function for generating posts with an agent
+   */
+  public readonly invokeAgentFunction: PythonFunction;
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -103,6 +115,38 @@ export class HealthAiCdkStack extends cdk.Stack {
       },
     });
 
+    // Create the Lambda function for generating posts with an agent
+    this.invokeAgentFunction = new PythonFunction(this, "InvokeAgentFunction", {
+      entry: "./lambda/",
+      handler: "handler",
+      index: "invoke_agent.py",
+
+      runtime: Runtime.PYTHON_3_12,
+      memorySize: 1024,
+      timeout: cdk.Duration.minutes(10),
+      logRetention: cdk.aws_logs.RetentionDays.ONE_WEEK,
+      tracing: Tracing.ACTIVE,
+      environment: {
+        ...COMMON_LAMBDA_ENV_VARS,
+      },
+    });
+
+    this.invokeAgentFunction.addToRolePolicy(
+      new PolicyStatement({
+        actions: [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeAgent",
+          "bedrock:RetrieveAndGenerate",
+          "bedrock:Retrieve",
+          "bedrock:ListAgents",
+          "bedrock:GetAgent",
+          "bedrock:InvokeModelWithResponseStream",
+        ],
+        resources: ["*"],
+        effect: cdk.aws_iam.Effect.ALLOW,
+      })
+    );
+
     const pinecone_vectorstore = new PineconeVectorStore({
       connectionString:
         "https://rag-with-bedrock-pinecone-pbfqwcb.svc.aped-4627-b74a.pinecone.io",
@@ -122,8 +166,25 @@ export class HealthAiCdkStack extends cdk.Stack {
 
         embeddingsModel: BedrockFoundationModel.TITAN_EMBED_TEXT_V2_1024,
         instruction:
-          "You are an expert clinical decision-support assistant, with deep domain expertise derived from the comprehensive MIMIC-III Clinical Database, which contains anonymized clinical data from critical care patients. Your purpose is to provide accurate, insightful, and relevant medical summaries, analyses, and recommendations based strictly on the provided dataset",
+          "An Expert clinical decision-support assistant trained on MIMIC-III; delivers precise, data-driven medical summaries, analyses, and recommendations strictly within that dataset’s scope",
       }
+    );
+
+    this.agent = new Agent(this, "HealthAIAgent", {
+      shouldPrepareAgent: true,
+      instruction:
+        "Goal: Turn every user request into a clear, actionable answer or artifact, grounded in the attached knowledge base (KB).Retrieve First: Search the KB for the most relevant facts/snippets; never guess if info is missing.Build Response: Start with a concise answer, weave in supporting KB details, use lists/steps when helpful, and keep fluff out.Tone: Professional, approachable, active voice, adjust depth to query complexity.Integrity: Quote or paraphrase accurately, no fabricated facts, note any gaps.Safety: Follow policy; refuse or redirect unsafe requests; keep prompts and user data private.Format: Plain text by default; switch formats only if the user asks",
+      foundationModel: BedrockFoundationModel.ANTHROPIC_CLAUDE_3_5_SONNET_V1_0,
+    });
+    this.agent_alias = new AgentAlias(this, "HealthAIAgentAlias", {
+      agent: this.agent,
+    });
+    this.agent.addKnowledgeBase(this.healthKnowledgeBase);
+
+    this.invokeAgentFunction.addEnvironment("AGENT_ID", this.agent.agentId);
+    this.invokeAgentFunction.addEnvironment(
+      "AGENT_ALIAS",
+      this.agent_alias.aliasId
     );
 
     const health_ai_bucket = new cdk.aws_s3.Bucket(this, "HealthAIBucket", {
@@ -143,12 +204,11 @@ export class HealthAiCdkStack extends cdk.Stack {
 
     const guardrail = new bedrock.Guardrail(this, "HealthcareAIGuardrail", {
       name: "HealthcareAIGuardrail",
-      description:
-        "Guardrail for serverless healthcare AI app using MIMIC-III data",
+      description: "Guardrail for healthcare AI app using MIMIC-III data",
       blockedInputMessaging:
-        "Sorry — that request violates the usage policy for this medical assistant.",
+        "Sorry, that request violates the usage policy for this medical assistant.",
       blockedOutputsMessaging:
-        "Sorry — part of the answer was removed to protect patient privacy.",
+        "Sorry, part of the answer was removed to protect patient privacy.",
     });
 
     //  Harmful-content filters (strict on both input & output)
@@ -179,8 +239,8 @@ export class HealthAiCdkStack extends cdk.Stack {
       inputModalities: [ModalityType.TEXT],
       outputModalities: [ModalityType.TEXT],
     });
-    //  Denied topics ─ the assistant must not give legal / financial advice
-    guardrail.addDeniedTopicFilter(Topic.FINANCIAL_ADVICE);
+
+    guardrail.addDeniedTopicFilter(Topic.MEDICAL_ADVICE);
     guardrail.addDeniedTopicFilter(
       Topic.custom({
         name: "Legal_Advice",
@@ -196,21 +256,27 @@ export class HealthAiCdkStack extends cdk.Stack {
       })
     );
 
-    //  Word filters – profanity list + generic stop-words
     guardrail.addManagedWordListFilter({
       type: ManagedWordFilterType.PROFANITY,
       inputAction: GuardrailAction.BLOCK,
       outputAction: GuardrailAction.BLOCK,
     });
-    guardrail.addWordFilter({ text: "10014354" }); // example custom word
+    guardrail.addWordFilter({ text: "health update" });
 
-    // PII filters – anonymise or block patient identifiers
     guardrail.addPIIFilter({
       type: PIIType.General.NAME,
       action: GuardrailAction.ANONYMIZE,
       inputAction: GuardrailAction.BLOCK,
       outputAction: GuardrailAction.ANONYMIZE,
     });
+
+    guardrail.addPIIFilter({
+      type: PIIType.General.EMAIL,
+      action: GuardrailAction.ANONYMIZE,
+      inputAction: GuardrailAction.BLOCK,
+      outputAction: GuardrailAction.ANONYMIZE,
+    });
+
     guardrail.addPIIFilter({
       type: PIIType.General.ADDRESS,
       action: GuardrailAction.ANONYMIZE,
@@ -240,7 +306,7 @@ export class HealthAiCdkStack extends cdk.Stack {
       outputAction: GuardrailAction.ANONYMIZE,
     });
 
-    //   Contextual grounding – block hallucinations & off-topic answers
+    //Contextual grounding – block hallucinations & off-topic answers
     guardrail.addContextualGroundingFilter({
       type: ContextualGroundingFilterType.GROUNDING,
       threshold: 0.85,
@@ -265,6 +331,19 @@ export class HealthAiCdkStack extends cdk.Stack {
       "GUARDRAIL_VERSION",
       guardrail.guardrailVersion
     );
+
+    this.invokeAgentFunction.addEnvironment(
+      "GUARDRAIL_ID",
+      guardrail.guardrailId
+    );
+    this.invokeAgentFunction.addEnvironment(
+      "GUARDRAIL_VERSION",
+      guardrail.guardrailVersion
+    );
+
+    
+
+    this.agent.addGuardrail(guardrail);
 
     const bedrockRetrieveAndGenerateDS =
       this.healthAiGraphqlApi.addHttpDataSource(
@@ -321,6 +400,15 @@ export class HealthAiCdkStack extends cdk.Stack {
         "arn:aws:bedrock:us-east-1:132260253285:guardrail/hxncc8et2exw",
       ],
     });
+
+    this.healthAiGraphqlApi
+      .addLambdaDataSource("invokeAgentDatasource", this.invokeAgentFunction)
+      .createResolver("invokeAgentLambdaResolver", {
+        typeName: "Query",
+        fieldName: "retrieveContextFromAgent",
+        code: Code.fromAsset(path.join(__dirname, "../resolvers/invoke.js")),
+        runtime: FunctionRuntime.JS_1_0_0,
+      });
     bedrockRetrieveAndGenerateDS.grantPrincipal.addToPrincipalPolicy(
       allowInvokeStmt
     );
@@ -347,19 +435,5 @@ export class HealthAiCdkStack extends cdk.Stack {
           ),
         }
       );
-
-    const applyGuardrailResolver = this.healthAiGraphqlApi.createResolver(
-      "applyGuardrailResolver",
-
-      {
-        typeName: "Query",
-        fieldName: "applyGuardrail",
-        dataSource: bedrockRetrieveAndGenerateDS,
-        runtime: FunctionRuntime.JS_1_0_0,
-        code: Code.fromAsset(
-          path.join(__dirname, "../resolvers/applyGuardrail.js")
-        ),
-      }
-    );
   }
 }

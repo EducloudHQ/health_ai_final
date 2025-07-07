@@ -12,8 +12,20 @@ type Query {
   retrieveAndGenerateResponse(input: RetrieveAndGenerateResponseInput!): String
     @aws_api_key
   applyGuardrail(input: RetrieveAndGenerateResponseInput!): String @aws_api_key
+
+  retrieveContextFromAgent(input: AgentContextInput!): AgentContextResponse!
+    @aws_api_key
 }
 
+input AgentContextInput @aws_cognito_user_pools {
+  query: String!
+  session_id: String
+}
+
+type AgentContextResponse @aws_cognito_user_pools {
+  response: String!
+  session_id: String!
+}
 type Mutation {
   saveMedicalRecords(id: String!): String! @aws_api_key
 }
